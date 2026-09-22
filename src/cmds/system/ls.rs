@@ -33,6 +33,15 @@ fn shows_dotfiles(args: &[String]) -> bool {
 }
 
 pub fn run(args: &[String], verbose: u8) -> Result<i32> {
+    // Windows ships no `ls` binary to shell out to, so `resolved_command("ls")`
+    // used to spawn a program that isn't there and the command died with
+    // "Failed to spawn process: program not found". List the directory with
+    // `std::fs` instead and emit rtk's normal compact output. The Unix pipeline
+    // (and its `ls -la` text parsers) stay compiled on both platforms.
+    if cfg!(windows) {
+        return run_native(args, verbose);
+    }
+
     let show_all = shows_dotfiles(args);
 
     // Per `man ls`, the long listing is triggered by `-l` and also implied by
@@ -135,6 +144,242 @@ pub fn run(args: &[String], verbose: u8) -> Result<i32> {
             .early_exit_on_failure()
             .no_trailing_newline(),
     )
+}
+
+/// A single directory entry read natively via `std::fs` (Windows path).
+///
+/// Deliberately decoupled from the filesystem so [`compact_ls_native`] can be
+/// unit-tested on any platform by feeding it hand-built entries.
+struct NativeEntry {
+    /// Full name as shown (includes the path prefix for a named dir or `-R`).
+    display: String,
+    /// Bare entry name — used for the dotfile / noise-dir rules.
+    basename: String,
+    is_dir: bool,
+    size: u64,
+    /// Permission bits rendered the way `ls -la` would, used only with `-l`.
+    octal: &'static str,
+}
+
+/// Whether the args request the long listing — mirrors the detection in
+/// [`run`] so `rtk ls -l` looks the same on both platforms.
+fn wants_long(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        if a == "--full-time" || a == "--format=long" || a == "--format=verbose" {
+            return true;
+        }
+        if is_short_flag(a) {
+            return a.chars().any(|c| matches!(c, 'l' | 'g' | 'n' | 'o'));
+        }
+        false
+    })
+}
+
+fn wants_recurse(args: &[String]) -> bool {
+    args.iter()
+        .any(|a| (is_short_flag(a) && a.contains('R')) || a == "--recurse")
+}
+
+/// Extensions that make a file executable on Windows (a file is runnable by
+/// suffix, not by permission bit, so `-l` shows these as `755`).
+fn is_exec_name(name: &str) -> bool {
+    matches!(
+        std::path::Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .as_deref(),
+        Some("exe") | Some("cmd") | Some("bat") | Some("com") | Some("ps1")
+    )
+}
+
+/// `rtk ls` on Windows: read the directory tree with `std::fs` (no external
+/// `ls`) and render rtk's compact output.
+fn run_native(args: &[String], verbose: u8) -> Result<i32> {
+    let show_all = shows_dotfiles(args);
+    let show_long = wants_long(args);
+    let recurse = wants_recurse(args);
+
+    let mut paths: Vec<&str> = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .map(String::as_str)
+        .collect();
+    if paths.is_empty() {
+        paths.push(".");
+    }
+
+    let mut entries: Vec<NativeEntry> = Vec::new();
+    for p in &paths {
+        let pb = std::path::Path::new(p);
+        let md = match std::fs::metadata(pb) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("rtk ls: cannot access '{p}': {e}");
+                continue;
+            }
+        };
+        if md.is_file() {
+            let name = pb
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| (*p).to_string());
+            entries.push(NativeEntry {
+                display: (*p).to_string(),
+                basename: name,
+                is_dir: false,
+                size: md.len(),
+                octal: octal_for(false, md.permissions().readonly(), p),
+            });
+        } else {
+            walk_native(pb, p, recurse, show_all, &mut entries);
+        }
+    }
+    entries.sort_by(|a, b| a.display.cmp(&b.display));
+
+    let (body, _kept, truncated, filtered) = compact_ls_native(&entries, show_all, show_long);
+    let mut out = body;
+    if let Some(hint) = hidden_hint(&truncated, &filtered) {
+        out.push_str(&hint);
+        out.push('\n');
+    }
+    if verbose > 0 {
+        eprintln!("rtk ls: {} entries (native listing)", entries.len());
+    }
+    // Match the Unix path's `no_trailing_newline()` rendering.
+    print!("{}", out.trim_end_matches('\n'));
+    Ok(0)
+}
+
+/// Permission octal for a native entry, approximating `ls -la` from Windows
+/// file attributes (read-only bit + executable extension). Only consulted for
+/// the long listing.
+fn octal_for(is_dir: bool, readonly: bool, name: &str) -> &'static str {
+    if is_dir {
+        if readonly { "555" } else { "755" }
+    } else if readonly {
+        "444"
+    } else if is_exec_name(name) {
+        "755"
+    } else {
+        "644"
+    }
+}
+
+/// Recursively collect `dir`'s entries into `out`. Names are rendered relative
+/// to `base` (the path the user passed). When `show_all` is false, dotfiles are
+/// neither listed nor descended into, and noise directories are recorded by
+/// [`compact_ls_native`] rather than recursed.
+fn walk_native(
+    dir: &std::path::Path,
+    base: &str,
+    recurse: bool,
+    show_all: bool,
+    out: &mut Vec<NativeEntry>,
+) {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            eprintln!("rtk ls: cannot open '{base}': {e}");
+            return;
+        }
+    };
+    for entry in rd.flatten() {
+        let basename = entry.file_name().to_string_lossy().to_string();
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let is_dir = ft.is_dir();
+        let (size, readonly) = match entry.metadata() {
+            Ok(m) => (m.len(), m.permissions().readonly()),
+            Err(_) => (0, false),
+        };
+        let octal = if ft.is_symlink() {
+            "777"
+        } else {
+            octal_for(is_dir, readonly, &basename)
+        };
+        out.push(NativeEntry {
+            display: join_disp(base, &basename),
+            basename: basename.clone(),
+            is_dir,
+            size,
+            octal,
+        });
+        if recurse && is_dir && (show_all || is_visible_during_walk(&basename)) {
+            walk_native(
+                &dir.join(&basename),
+                &join_disp(base, &basename),
+                true,
+                show_all,
+                out,
+            );
+        }
+    }
+}
+
+/// descend-into-a-subdir gate while walking without `-a`: skip dot-directories;
+/// noise dirs are handled by the filter so we don't walk them either.
+fn is_visible_during_walk(basename: &str) -> bool {
+    !basename.starts_with('.') && !NOISE_DIRS.contains(&basename)
+}
+
+/// Join a base path with an entry name the way `ls` echoes it: for the current
+/// directory (".") just the name, otherwise `<base>\<name>` with the platform
+/// separator.
+fn join_disp(base: &str, name: &str) -> String {
+    if base == "." || base.is_empty() {
+        name.to_string()
+    } else {
+        let sep = std::path::MAIN_SEPARATOR;
+        let trimmed = base.trim_end_matches(['/', sep]);
+        format!("{trimmed}{sep}{name}")
+    }
+}
+
+/// Windows counterpart of [`compact_ls`]: turns native entries into the same
+/// compact listing, applying the same dotfile / noise-dir / cap rules.
+fn compact_ls_native(
+    entries: &[NativeEntry],
+    show_all: bool,
+    show_long: bool,
+) -> (String, usize, Vec<String>, Vec<String>) {
+    let mut dirs: Vec<(String, Option<String>)> = Vec::new();
+    let mut files: Vec<(String, String, Option<String>)> = Vec::new();
+    let mut filtered: Vec<String> = Vec::new();
+    let mut kept = 0usize;
+
+    for e in entries {
+        // Dotfiles are hidden unless `-a`; ls never printed them either, so they
+        // are skipped without recording.
+        if !show_all && e.basename.starts_with('.') {
+            continue;
+        }
+        // Noise dirs are recorded so the recovery hint can surface them.
+        if !show_all && NOISE_DIRS.iter().any(|noise| *noise == e.basename) {
+            filtered.push(format!("{}/", e.display));
+            continue;
+        }
+        let octal = if show_long {
+            Some(e.octal.to_string())
+        } else {
+            None
+        };
+        if e.is_dir {
+            dirs.push((e.display.clone(), octal));
+        } else {
+            files.push((e.display.clone(), human_size(e.size), octal));
+        }
+        kept += 1;
+    }
+
+    if dirs.is_empty() && files.is_empty() {
+        return ("(empty)\n".to_string(), 0, Vec::new(), filtered);
+    }
+
+    let (entries_out, truncated) = assemble(dirs, files);
+    (entries_out, kept, truncated, filtered)
 }
 
 /// Build the recovery hint for entries dropped from the listing —
@@ -346,7 +591,19 @@ fn compact_ls(
         return ("(empty)\n".to_string(), parsed_count, Vec::new(), filtered);
     }
 
-    // Dirs first, then files — one compact line each
+    let (entries, truncated) = assemble(dirs, files);
+    (entries, parsed_count, truncated, filtered)
+}
+
+/// Render `dirs`/`files` into rtk's compact listing — directories first, then
+/// files, one line each — and cap the result at `CAP_INVENTORY`, returning the
+/// visible block plus the lines dropped by the cap (recoverable via the tee
+/// hint). Shared by the Unix (`compact_ls`) and Windows (`compact_ls_native`)
+/// paths so both emit byte-identical formatting.
+fn assemble(
+    dirs: Vec<(String, Option<String>)>,
+    files: Vec<(String, String, Option<String>)>,
+) -> (String, Vec<String>) {
     let mut all_lines: Vec<String> = Vec::with_capacity(dirs.len() + files.len());
     for (name, octal) in &dirs {
         all_lines.push(match octal {
@@ -374,7 +631,7 @@ fn compact_ls(
         entries.push('\n');
     }
 
-    (entries, parsed_count, truncated, filtered)
+    (entries, truncated)
 }
 
 #[cfg(test)]
@@ -875,5 +1132,124 @@ mod tests {
         let (entries, parsed_count, _truncated, _hidden) = compact_ls(input, false, false);
         assert_eq!(parsed_count, 0);
         assert!(entries.is_empty());
+    }
+
+    // ---- native (Windows) listing path: pure logic, runs on every platform ----
+
+    fn ne(
+        display: &str,
+        basename: &str,
+        is_dir: bool,
+        size: u64,
+        octal: &'static str,
+    ) -> NativeEntry {
+        NativeEntry {
+            display: display.to_string(),
+            basename: basename.to_string(),
+            is_dir,
+            size,
+            octal,
+        }
+    }
+
+    #[test]
+    fn test_native_compact_basic() {
+        let entries = vec![
+            ne("src", "src", true, 0, "755"),
+            ne("Cargo.toml", "Cargo.toml", false, 1234, "644"),
+        ];
+        let (out, kept, truncated, filtered) = compact_ls_native(&entries, false, false);
+        assert_eq!(kept, 2);
+        assert!(truncated.is_empty() && filtered.is_empty());
+        // Dirs first, trailing slash; files carry a human size.
+        assert_eq!(out, "src/\nCargo.toml  1.2K\n");
+        assert!(!out.contains("644"), "short format omits perms");
+    }
+
+    #[test]
+    fn test_native_compact_long_shows_octal() {
+        let entries = vec![
+            ne("src", "src", true, 0, "755"),
+            ne("build.ps1", "build.ps1", false, 500, "755"),
+            ne("Cargo.toml", "Cargo.toml", false, 1234, "644"),
+        ];
+        let (out, _, _, _) = compact_ls_native(&entries, false, true);
+        assert!(out.contains("755  src/"));
+        assert!(
+            out.contains("755  build.ps1  500B"),
+            "exe ext -> 755: {out}"
+        );
+        assert!(out.contains("644  Cargo.toml  1.2K"));
+    }
+
+    #[test]
+    fn test_native_compact_hides_dotfiles_unless_all() {
+        let entries = vec![
+            ne(".env", ".env", false, 10, "644"),
+            ne("main.rs", "main.rs", false, 20, "644"),
+        ];
+        let (out, kept, _, filtered) = compact_ls_native(&entries, false, false);
+        assert_eq!(kept, 1);
+        assert!(!out.contains(".env"), "dotfile hidden without -a");
+        assert!(
+            filtered.is_empty(),
+            "hidden dotfile is not a recoverable 'filter'"
+        );
+
+        let (out_all, kept_all, _, _) = compact_ls_native(&entries, true, false);
+        assert_eq!(kept_all, 2);
+        assert!(out_all.contains(".env"), "-a reveals dotfiles");
+    }
+
+    #[test]
+    fn test_native_compact_filters_noise_dirs() {
+        let entries = vec![
+            ne("node_modules", "node_modules", true, 0, "755"),
+            ne("src", "src", true, 0, "755"),
+            ne("main.rs", "main.rs", false, 5, "644"),
+        ];
+        let (out, kept, _, filtered) = compact_ls_native(&entries, false, false);
+        assert_eq!(kept, 2);
+        assert!(!out.contains("node_modules"));
+        assert_eq!(filtered, vec!["node_modules/".to_string()]);
+
+        let (out_all, _, _, filt_all) = compact_ls_native(&entries, true, false);
+        assert!(out_all.contains("node_modules/"));
+        assert!(filt_all.is_empty(), "-a shows noise, nothing hidden");
+    }
+
+    #[test]
+    fn test_native_compact_empty_dir() {
+        let (out, kept, _, _) = compact_ls_native(&[], false, false);
+        assert_eq!(out, "(empty)\n");
+        assert_eq!(kept, 0);
+    }
+
+    #[test]
+    fn test_native_display_prefix_and_paths() {
+        // A named directory prefixes entries with the path, matching `ls <dir>`.
+        let entries = vec![ne("C:\\repo\\src", "src", true, 0, "755")];
+        let (out, _, _, _) = compact_ls_native(&entries, false, false);
+        assert_eq!(out, "C:\\repo\\src/\n");
+    }
+
+    #[test]
+    fn test_join_disp() {
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(join_disp(".", "a"), "a");
+        assert_eq!(join_disp("", "a"), "a");
+        assert_eq!(join_disp("repo", "a"), format!("repo{sep}a"));
+        assert_eq!(join_disp("repo\\", "a"), format!("repo{sep}a"));
+    }
+
+    #[test]
+    fn test_octal_and_exec() {
+        assert_eq!(octal_for(true, false, "x"), "755");
+        assert_eq!(octal_for(true, true, "x"), "555");
+        assert_eq!(octal_for(false, true, "x"), "444");
+        assert_eq!(octal_for(false, false, "tool.exe"), "755");
+        assert_eq!(octal_for(false, false, "x"), "644");
+        assert!(is_exec_name("a.PS1"));
+        assert!(!is_exec_name("a.rs"));
     }
 }
