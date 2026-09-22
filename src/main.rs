@@ -125,6 +125,17 @@ enum Commands {
         /// Keep only last N lines
         #[arg(long, conflicts_with_all = ["max_lines", "head_lines"])]
         tail_lines: Option<usize>,
+        /// Show only lines START-END (1-based, inclusive), like `sed -n 'A,Bp'`.
+        /// Byte-exact at the default --level none with -n off.
+        /// Parsed in the dispatch (not a value_parser) on purpose: clap errors
+        /// on non-meta commands are swallowed by run_fallback, which would
+        /// degrade a typo'd range into "exec read" -> 127.
+        #[arg(
+            long,
+            value_name = "START-END",
+            conflicts_with_all = ["max_lines", "head_lines", "tail_lines"]
+        )]
+        range: Option<String>,
         /// Show line numbers
         #[arg(short = 'n', long)]
         line_numbers: bool,
@@ -1989,8 +2000,20 @@ fn run_cli() -> Result<i32> {
             max_lines,
             head_lines,
             tail_lines,
+            range,
             line_numbers,
         } => {
+            // Parse --range here rather than via a clap value_parser: a clap
+            // error on `read` (non-meta) is caught by run_fallback and exec'd,
+            // turning a typo'd range into a bogus "exec read" 127. Here the bad
+            // value is a clean usage error.
+            let range = match range.as_deref().map(read::parse_line_range).transpose() {
+                Ok(r) => r,
+                Err(msg) => {
+                    eprintln!("rtk: --range: {msg}");
+                    return Ok(2);
+                }
+            };
             let mut had_error = false;
             let mut stdin_seen = false;
             for file in &files {
@@ -2005,6 +2028,7 @@ fn run_cli() -> Result<i32> {
                         max_lines,
                         head_lines,
                         tail_lines,
+                        range,
                         line_numbers,
                         cli.verbose,
                     )
@@ -2015,6 +2039,7 @@ fn run_cli() -> Result<i32> {
                         max_lines,
                         head_lines,
                         tail_lines,
+                        range,
                         line_numbers,
                         cli.verbose,
                     )

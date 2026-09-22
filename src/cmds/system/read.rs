@@ -8,12 +8,14 @@ use std::fs;
 use std::io::{self, Read as IoRead, Write};
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     file: &Path,
     level: FilterLevel,
     max_lines: Option<usize>,
     head_lines: Option<usize>,
     tail_lines: Option<usize>,
+    range: Option<(usize, usize)>,
     line_numbers: bool,
     verbose: u8,
 ) -> Result<()> {
@@ -53,7 +55,7 @@ pub fn run(
         fs::read(file).with_context(|| format!("Failed to read file: {}", file.display()))?;
     if level == FilterLevel::None
         && !line_numbers
-        && let Some(window) = byte_line_window(&bytes, head_lines, tail_lines)
+        && let Some(window) = line_window(&bytes, head_lines, tail_lines, range)
     {
         io::stdout()
             .lock()
@@ -109,7 +111,14 @@ pub fn run(
         );
     }
 
-    filtered = apply_line_window(&filtered, max_lines, head_lines, tail_lines, &lang);
+    // clap keeps --range mutually exclusive with the other windows, so the two
+    // branches below never fight; on the filtered path the range selects lines
+    // of the FILTERED output, mirroring how head/tail windows apply post-filter.
+    filtered = if let Some((first, last)) = range {
+        String::from_utf8_lossy(range_window(filtered.as_bytes(), first, last)).into_owned()
+    } else {
+        apply_line_window(&filtered, max_lines, head_lines, tail_lines, &lang)
+    };
 
     let (raw, rtk_output) = if line_numbers {
         (
@@ -130,6 +139,7 @@ pub fn run_stdin(
     max_lines: Option<usize>,
     head_lines: Option<usize>,
     tail_lines: Option<usize>,
+    range: Option<(usize, usize)>,
     line_numbers: bool,
     verbose: u8,
 ) -> Result<()> {
@@ -147,7 +157,7 @@ pub fn run_stdin(
         .context("Failed to read from stdin")?;
     if level == FilterLevel::None
         && !line_numbers
-        && let Some(window) = byte_line_window(&bytes, head_lines, tail_lines)
+        && let Some(window) = line_window(&bytes, head_lines, tail_lines, range)
     {
         io::stdout()
             .lock()
@@ -339,6 +349,75 @@ fn byte_line_window(
     }
 }
 
+/// The window selection behind the byte-exact fast paths: head/tail as before,
+/// plus the post-filter `--range` window. clap guarantees at most one of the
+/// three is set; precedence is moot but ordered head > tail > range for clarity.
+fn line_window(
+    content: &[u8],
+    head_lines: Option<usize>,
+    tail_lines: Option<usize>,
+    range: Option<(usize, usize)>,
+) -> Option<&[u8]> {
+    byte_line_window(content, head_lines, tail_lines)
+        .or_else(|| range.map(|(first, last)| range_window(content, first, last)))
+}
+
+/// Byte offset just past the `n`th `\n` — i.e. the start of line `n + 1` — or
+/// `None` when the content holds fewer than `n` newlines.
+fn nth_newline_end(content: &[u8], n: usize) -> Option<usize> {
+    if n == 0 {
+        return Some(0);
+    }
+    let mut seen = 0;
+    for (idx, &byte) in content.iter().enumerate() {
+        if byte == b'\n' {
+            seen += 1;
+            if seen == n {
+                return Some(idx + 1);
+            }
+        }
+    }
+    None
+}
+
+/// Lines `first..=last` (1-based, inclusive) as a byte slice — the `sed -n
+/// 'A,Bp'` window. Sliced on bytes like `head_window`/`tail_window`, so CRLF
+/// endings and an unterminated final line survive verbatim: `last` extends to
+/// its terminating newline, or to EOF when the line is unterminated. A range
+/// starting past the last line is empty; one ending past it is clamped.
+fn range_window(content: &[u8], first: usize, last: usize) -> &[u8] {
+    let Some(start) = nth_newline_end(content, first - 1) else {
+        return &[];
+    };
+    if start >= content.len() {
+        return &[];
+    }
+    let end = nth_newline_end(content, last).unwrap_or(content.len());
+    &content[start..end]
+}
+
+/// Parse `--range A-B` (1-based, inclusive). Kept strict — `A`/`B` plain forms
+/// or open-ended suffixes are rejected with a hint rather than guessed at, and
+/// clap turns any Err here into the usual exit-2 usage error.
+pub fn parse_line_range(s: &str) -> Result<(usize, usize), String> {
+    let (a, b) = s
+        .split_once('-')
+        .ok_or_else(|| format!("expected START-END (e.g. 5-20), got '{s}'"))?;
+    let first = a
+        .parse::<usize>()
+        .map_err(|e| format!("invalid range start '{a}': {e}"))?;
+    let last = b
+        .parse::<usize>()
+        .map_err(|e| format!("invalid range end '{b}': {e}"))?;
+    if first == 0 {
+        return Err("range start is 1-based (use 1, not 0)".to_string());
+    }
+    if last < first {
+        return Err(format!("range end {last} is before start {first}"));
+    }
+    Ok((first, last))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,6 +539,7 @@ fn main() {{
         run(
             file.path(),
             FilterLevel::Minimal,
+            None,
             None,
             None,
             None,
@@ -664,10 +744,13 @@ fn main() {{
     }
 
     fn rtk_bin() -> std::path::PathBuf {
-        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
-            .join("debug")
-            .join("rtk")
+            .join("debug");
+        // Windows emits `rtk.exe`; without the suffix every ignored e2e test
+        // below fails its existence assert on Windows runners.
+        path.push(if cfg!(windows) { "rtk.exe" } else { "rtk" });
+        path
     }
 
     #[test]
@@ -747,6 +830,93 @@ fn main() {{
             stderr.contains("stdin specified more than once"),
             "should warn about duplicate stdin, got stderr: {}",
             stderr
+        );
+    }
+
+    // ---- --range window kernel ----
+
+    #[test]
+    fn test_range_window_selects_inclusive_lines() {
+        let c = b"l1\nl2\nl3\nl4\n";
+        assert_eq!(range_window(c, 2, 3), b"l2\nl3\n");
+        assert_eq!(range_window(c, 1, 1), b"l1\n");
+        assert_eq!(range_window(c, 1, 4), c.as_slice());
+    }
+
+    #[test]
+    fn test_range_window_clamps_past_eof_and_rejects_past_end() {
+        let c = b"l1\nl2\nl3\n";
+        // end past the last line clamps to EOF...
+        assert_eq!(range_window(c, 3, 99), b"l3\n");
+        // ...but a start past the last line is the empty window, not all.
+        assert_eq!(range_window(c, 4, 9), b"");
+        assert_eq!(range_window(c, 5, 6), b"");
+        assert_eq!(range_window(b"", 1, 3), b"");
+    }
+
+    #[test]
+    fn test_range_window_preserves_crlf_and_unterminated_tail() {
+        // CRLF: the \r belongs to the line and must survive verbatim.
+        assert_eq!(range_window(b"a\r\nb\r\nc\r\n", 2, 3), b"b\r\nc\r\n");
+        // Unterminated final line: no newline to end on, slice stops at EOF.
+        assert_eq!(range_window(b"a\nb", 2, 5), b"b");
+        assert_eq!(range_window(b"a\nb", 1, 2), b"a\nb");
+    }
+
+    #[test]
+    fn test_line_window_dispatches_range_and_keeps_precedence() {
+        let c = b"l1\nl2\nl3\n";
+        assert_eq!(
+            line_window(c, None, None, Some((2, 3))),
+            Some(&b"l2\nl3\n"[..])
+        );
+        assert_eq!(line_window(c, None, None, None), None);
+        // clap enforces exclusivity; pin the function's precedence anyway.
+        assert_eq!(
+            line_window(c, Some(1), None, Some((3, 3))),
+            Some(&b"l1\n"[..])
+        );
+        assert_eq!(
+            line_window(c, None, Some(1), Some((3, 3))),
+            Some(&b"l3\n"[..])
+        );
+    }
+
+    #[test]
+    fn test_parse_line_range_accepts_and_rejects() {
+        assert_eq!(parse_line_range("5-20"), Ok((5, 20)));
+        assert_eq!(parse_line_range("7-7"), Ok((7, 7)));
+        // 1-based only
+        assert!(parse_line_range("0-5").is_err());
+        // reversed, non-numeric, missing separator, open-ended all refused
+        assert!(parse_line_range("9-3").is_err());
+        assert!(parse_line_range("a-b").is_err());
+        assert!(parse_line_range("5").is_err());
+        assert!(parse_line_range("5-").is_err());
+        assert!(parse_line_range("-5").is_err());
+    }
+
+    /// End-to-end over the real binary (same `rtk_bin()` pattern as the other
+    /// ignored tests here): byte-exact window plus the clap conflict guard.
+    #[test]
+    #[ignore]
+    fn test_read_range_e2e() {
+        let bin = rtk_bin();
+        assert!(bin.exists(), "Run `cargo build` first");
+
+        let mut f = NamedTempFile::with_suffix(".txt").unwrap();
+        write!(f, "one\ntwo\nthree\nfour\n").unwrap();
+        let path = f.path().to_string_lossy().into_owned();
+
+        let out = std::process::Command::new(&bin)
+            .args(["read", "--range", "2-3", &path])
+            .output()
+            .expect("run rtk read --range");
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "two\nthree\n",
+            "window must be byte-exact"
         );
     }
 }

@@ -112,7 +112,10 @@ rtk patch <file> --dry-run ...       # 零写入预演
 
 1. **`rtk read` 新增 `--range <a>-<b>`（行窗口）**：当前 read 只有 head/tail/max-lines，
    无任意区间；验证流（§4 契约）与 sed -n 改写都依赖它。实现挂现有
-   `byte_line_window` 内核，`--range` 与 head/tail 互斥（冲突报 exit 2）。
+   `byte_line_window` 内核。**多窗口组合不依赖 clap 报错**——实测发现 `read` 等非
+   meta 命令的 clap 冲突会被 `run_fallback` 吞掉、退化成 exec `read`（127，与既有
+   head/tail 冲突同款行为）；故内核 `line_window` 提供确定性优先级
+   （head > tail > range），clap `conflicts_with_all` 仅作同款 house-style 声明。
 2. `type <file>`（cmd.exe 内建）与 `more <file>` → `rtk read <file>`（仅普通调用、
    非管道段；PowerShell 中 `type`=Get-Content 已覆盖）。
 3. `Get-Content -ReadCount N`、`Get-Content -Head/-Tail` 未覆盖参数组合补齐。
