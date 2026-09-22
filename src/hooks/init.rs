@@ -514,6 +514,19 @@ rtk grep <pattern>      # Search grouped by file (75%). Format flags (-c, -l, -L
 rtk find <pattern>      # Find grouped by directory (70%)
 ```
 
+### Editing (write side — token-cheap, byte-faithful)
+Prefer these over re-writing a whole file: the input is only the change and the
+receipt is one line, not the file again. All preserve CRLF/encoding (UTF-8/BOM/
+GBK) and write atomically; a rejected edit touches zero bytes.
+```bash
+rtk edit <file> --find "..." --replace "..."   # Requires EXACTLY one match; refuses if ambiguous (lists the lines)
+rtk edit <file> --find "..." --replace "..." --all         # replace every match
+rtk edit <file> --find "..." --range 40-60                 # narrow an ambiguous match to a line window
+rtk edit <file> --find 'version: (\d+)' --replace 'v$1' --regex   # regex, $N groups
+rtk edit <file> --find "..." --replace "..." --preview     # dry run: receipt only, no write
+rtk patch <file> < changes.diff                            # apply a unified diff (stdin), all-or-nothing; --dry-run rehearses
+```
+
 ### Analysis & Debug (70-90% savings)
 ```bash
 rtk err <cmd>           # Filter errors only from any command

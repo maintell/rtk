@@ -124,7 +124,8 @@ rtk patch <file> --dry-run ...       # 零写入预演
 4. ~~`sed -n 'A,Bp' file` → `rtk read --range`~~ — **砍掉（复核后）**。Windows PATH 上
    根本没有 sed，无"不能用"问题；Linux/mac 场景非本 fork 用户痛点；且 sed 与 discover
    层的 IGNORED 语义纠缠。agent 在 Windows 读区间已有 `Get-Content`/`rtk read --range` 路径。
-5. `init` 指导文档：新增"编辑/验证工作流"一节（P2 交付时联动更新）。
+5. `init` 指导文档：✅ 已交付——新增 "Editing (write side)" 章节，教 agent 用
+   `rtk edit`/`rtk patch` 做省 token 编辑、用 `rtk read --range` 做验证回读。
 
 ## 8. 测试策略（§5）
 
