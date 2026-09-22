@@ -41,6 +41,7 @@ getrandom = "0.4"
 flate2 = "1.0"
 quick-xml = "0.37"
 which = "8"
+diffy = "0.5.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

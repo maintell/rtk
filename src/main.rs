@@ -26,7 +26,7 @@ use cmds::rust::{cargo_cmd, runner};
 use cmds::scala::sbt_cmd;
 use cmds::system::{
     ast_grep_cmd, ctest_cmd, deps, du_cmd, edit_cmd, env_cmd, find_cmd, format_cmd, json_cmd,
-    local_llm, log_cmd, ls, pipe_cmd, read, search, summary, tree, wc_cmd,
+    local_llm, log_cmd, ls, patch_cmd, pipe_cmd, read, search, summary, tree, wc_cmd,
 };
 
 use anyhow::{Context, Result};
@@ -145,10 +145,10 @@ enum Commands {
         /// Text to find (verbatim; a regex with --regex)
         #[arg(long)]
         find: Option<String>,
-        /// Replacement text (omit to delete the match)
+        /// Replacement text (empty deletes the match)
         #[arg(long)]
         replace: Option<String>,
-        /// Replace every match (default: exactly one is required)
+        /// Replace every match instead of requiring exactly one
         #[arg(long)]
         all: bool,
         /// Treat --find as a regular expression ($1 groups work in --replace)
@@ -160,6 +160,15 @@ enum Commands {
         /// Only consider matches within lines START-END (1-based, inclusive)
         #[arg(long, value_name = "START-END")]
         range: Option<String>,
+    },
+
+    /// Apply a unified diff (stdin) to one file, all-or-nothing, with a cheap receipt
+    Patch {
+        /// File the diff applies to (the diff itself arrives on stdin)
+        file: PathBuf,
+        /// Report what would change without writing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Generate 2-line technical summary (heuristic-based)
@@ -2093,6 +2102,8 @@ fn run_cli() -> Result<i32> {
             },
             cli.verbose,
         )?,
+
+        Commands::Patch { file, dry_run } => patch_cmd::run(file, dry_run, cli.verbose)?,
 
         Commands::Smart {
             file,
@@ -4405,7 +4416,7 @@ mod tests {
         let bin_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
             .join("debug")
-            .join("rtk");
+            .join(if cfg!(windows) { "rtk.exe" } else { "rtk" });
         assert!(
             bin_path.exists(),
             "Debug binary not found at {:?} - run `cargo build` first",
