@@ -25,8 +25,8 @@ use cmds::ruby::{rake_cmd, rspec_cmd, rubocop_cmd};
 use cmds::rust::{cargo_cmd, runner};
 use cmds::scala::sbt_cmd;
 use cmds::system::{
-    ast_grep_cmd, ctest_cmd, deps, du_cmd, env_cmd, find_cmd, format_cmd, json_cmd, local_llm,
-    log_cmd, ls, pipe_cmd, read, search, summary, tree, wc_cmd,
+    ast_grep_cmd, ctest_cmd, deps, du_cmd, edit_cmd, env_cmd, find_cmd, format_cmd, json_cmd,
+    local_llm, log_cmd, ls, pipe_cmd, read, search, summary, tree, wc_cmd,
 };
 
 use anyhow::{Context, Result};
@@ -127,9 +127,6 @@ enum Commands {
         tail_lines: Option<usize>,
         /// Show only lines START-END (1-based, inclusive), like `sed -n 'A,Bp'`.
         /// Byte-exact at the default --level none with -n off.
-        /// Parsed in the dispatch (not a value_parser) on purpose: clap errors
-        /// on non-meta commands are swallowed by run_fallback, which would
-        /// degrade a typo'd range into "exec read" -> 127.
         #[arg(
             long,
             value_name = "START-END",
@@ -139,6 +136,30 @@ enum Commands {
         /// Show line numbers
         #[arg(short = 'n', long)]
         line_numbers: bool,
+    },
+
+    /// Edit a file by find/replace with a one-line receipt (never the whole file)
+    Edit {
+        /// File to edit
+        file: PathBuf,
+        /// Text to find (verbatim; a regex with --regex)
+        #[arg(long)]
+        find: Option<String>,
+        /// Replacement text (omit to delete the match)
+        #[arg(long)]
+        replace: Option<String>,
+        /// Replace every match (default: exactly one is required)
+        #[arg(long)]
+        all: bool,
+        /// Treat --find as a regular expression ($1 groups work in --replace)
+        #[arg(long)]
+        regex: bool,
+        /// Show the receipt without writing anything
+        #[arg(long, alias = "dry-run")]
+        preview: bool,
+        /// Only consider matches within lines START-END (1-based, inclusive)
+        #[arg(long, value_name = "START-END")]
+        range: Option<String>,
     },
 
     /// Generate 2-line technical summary (heuristic-based)
@@ -2051,6 +2072,27 @@ fn run_cli() -> Result<i32> {
             }
             if had_error { 1 } else { 0 }
         }
+
+        Commands::Edit {
+            file,
+            find,
+            replace,
+            all,
+            regex,
+            preview,
+            range,
+        } => edit_cmd::run(
+            edit_cmd::EditRequest {
+                file,
+                find,
+                replace,
+                all,
+                regex,
+                preview,
+                range,
+            },
+            cli.verbose,
+        )?,
 
         Commands::Smart {
             file,

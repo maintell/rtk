@@ -1,0 +1,10 @@
+# Windows gives spawned threads — the ones libtest runs each #[test] on — the
+# RUST_MIN_STACK default of 2 MB, independent of build.rs's main-thread
+# /STACK:8388608. rtk's clap parser recurses deep to build ~90 subcommands and
+# their args; a handful of parser-focused unit tests sat borderline against the
+# 2 MB ceiling, and adding the `edit` subcommand tipped them into
+# STATUS_STACK_OVERFLOW. 16 MB of *reserve* costs nothing until touched and
+# keeps `cargo test` green on Windows. The production binary is unaffected
+# (its main thread already gets 8 MB from build.rs).
+[env]
+RUST_MIN_STACK = "16777216"

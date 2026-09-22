@@ -3,6 +3,7 @@ pub mod constants;
 pub mod ctest_cmd;
 pub mod deps;
 pub mod du_cmd;
+pub mod edit_cmd;
 pub mod env_cmd;
 pub mod find_cmd;
 pub mod format_cmd;

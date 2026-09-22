@@ -30,4 +30,7 @@ pub const RTK_META_COMMANDS: &[&str] = &[
     "smart",
     "deps",
     "json",
+    // `rtk edit` is the edit verb, never a proxy: some systems carry an
+    // interactive /usr/bin/edit whose fallback exec would hang an agent.
+    "edit",
 ];
