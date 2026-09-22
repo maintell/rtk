@@ -313,11 +313,11 @@ fn build_powershell_script(cmdlet: &str, raw_args: &[String], pipeline: Option<&
     }
     let mut command = parts.join(" ");
 
-    if let Some(p) = pipeline {
-        if !has_user_pipeline(raw_args) {
-            command.push_str(" | ");
-            command.push_str(p);
-        }
+    if let Some(p) = pipeline
+        && !has_user_pipeline(raw_args)
+    {
+        command.push_str(" | ");
+        command.push_str(p);
     }
 
     command
@@ -439,12 +439,10 @@ fn group_wrapped_rows(lines: &[&str]) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
     for line in lines {
         let is_continuation = line.starts_with(' ') || line.starts_with('\t');
-        if is_continuation {
-            if let Some(last) = rows.last_mut() {
-                last.push('\n');
-                last.push_str(line);
-                continue;
-            }
+        if is_continuation && let Some(last) = rows.last_mut() {
+            last.push('\n');
+            last.push_str(line);
+            continue;
         }
         rows.push((*line).to_string());
     }
@@ -655,8 +653,7 @@ fn filter_get_netadapter(output: &str) -> String {
     )
 }
 
-const NETTCPCONNECTION_PIPELINE: &str =
-    "Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess | Format-Table -AutoSize";
+const NETTCPCONNECTION_PIPELINE: &str = "Select-Object LocalAddress,LocalPort,RemoteAddress,RemotePort,State,OwningProcess | Format-Table -AutoSize";
 const MAX_NETTCPCONNECTION_ROWS: usize = CAP_INVENTORY;
 
 fn filter_get_nettcpconnection(output: &str) -> String {
@@ -687,8 +684,7 @@ fn filter_get_package(output: &str) -> String {
     )
 }
 
-const WINEVENT_PIPELINE: &str =
-    "Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,Message | Format-Table -AutoSize -Wrap";
+const WINEVENT_PIPELINE: &str = "Select-Object TimeCreated,Id,LevelDisplayName,ProviderName,Message | Format-Table -AutoSize -Wrap";
 const MAX_WINEVENT_ROWS: usize = CAP_INVENTORY;
 
 fn filter_get_winevent(output: &str) -> String {
@@ -850,7 +846,13 @@ fn filter_test_netconnection(output: &str) -> String {
     filter_keyed_properties(output, NET_CONNECTION_KEEP)
 }
 
-const COMPUTER_INFO_KEEP: &[&str] = &["CsName", "CsDomain", "OsName", "OsVersion", "OsArchitecture"];
+const COMPUTER_INFO_KEEP: &[&str] = &[
+    "CsName",
+    "CsDomain",
+    "OsName",
+    "OsVersion",
+    "OsArchitecture",
+];
 
 fn filter_get_computerinfo(output: &str) -> String {
     filter_keyed_properties(output, COMPUTER_INFO_KEEP)
@@ -1062,15 +1064,15 @@ mod tests {
             "-Recurse".to_string(),
         ];
         let script = build_powershell_script("Get-ChildItem", &args, None);
-        assert_eq!(
-            script,
-            "Get-ChildItem -Path $env:RTK_PS_ARG_1 -Recurse"
-        );
+        assert_eq!(script, "Get-ChildItem -Path $env:RTK_PS_ARG_1 -Recurse");
     }
 
     #[test]
     fn test_build_powershell_script_zero_args() {
-        assert_eq!(build_powershell_script("Get-Process", &[], None), "Get-Process");
+        assert_eq!(
+            build_powershell_script("Get-Process", &[], None),
+            "Get-Process"
+        );
     }
 
     #[test]
@@ -1198,8 +1200,10 @@ TimeCreated           Id LevelDisplayName Message
         // Both the tail and block variants must degrade to a no-op (never
         // panic, never fabricate a hint) when recovery is disabled.
         let (tail, block) = temp_env::with_var("RTK_TEE", Some("0"), || {
-            let tail = append_recovery_hint("a\nb".to_string(), "a\nb\nc", "test-slug", 2, 3, false);
-            let block = append_recovery_hint("a\nb".to_string(), "a\nb\nc", "test-slug", 2, 3, true);
+            let tail =
+                append_recovery_hint("a\nb".to_string(), "a\nb\nc", "test-slug", 2, 3, false);
+            let block =
+                append_recovery_hint("a\nb".to_string(), "a\nb\nc", "test-slug", 2, 3, true);
             (tail, block)
         });
         assert_eq!(tail, "a\nb");
@@ -1319,8 +1323,7 @@ TimeCreated           Id LevelDisplayName Message
 
     #[test]
     fn test_filter_get_nettcpconnection() {
-        let raw =
-            include_str!("../../../tests/fixtures/powershell/get_nettcpconnection_raw.txt");
+        let raw = include_str!("../../../tests/fixtures/powershell/get_nettcpconnection_raw.txt");
         let input = strip_fixture_note(raw);
         let output = filter_get_nettcpconnection(&input);
 

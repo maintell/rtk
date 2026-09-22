@@ -2018,13 +2018,13 @@ fn rewrite_segment_inner(
 
     // PowerShell cmdlets share no command word with their GNU counterparts, so
     // they must be translated before classify_command() gives up on them.
-    if context == RewriteContext::Normal {
-        if let Some(rewritten) = rewrite_powershell(cmd_part) {
-            if is_excluded(&rewritten, excluded) {
-                return None;
-            }
-            return Some(format!("{}{}", rewritten, redirect_suffix));
+    if context == RewriteContext::Normal
+        && let Some(rewritten) = rewrite_powershell(cmd_part)
+    {
+        if is_excluded(&rewritten, excluded) {
+            return None;
         }
+        return Some(format!("{}{}", rewritten, redirect_suffix));
     }
 
     // Most cat flags (-v, -A, -e, -t, -s, -b, --show-all, etc.) have different
@@ -2891,7 +2891,10 @@ mod tests {
         // Reading from the pipeline rather than a path: nothing for grep to open.
         assert_eq!(rewrite_powershell("Select-String -Pattern bar"), None);
         // grep -C is symmetric, -Context 2,4 is not.
-        assert_eq!(rewrite_powershell("Select-String bar foo.txt -Context 2,4"), None);
+        assert_eq!(
+            rewrite_powershell("Select-String bar foo.txt -Context 2,4"),
+            None
+        );
         assert_eq!(rewrite_powershell("Select-String bar foo.txt -List"), None);
     }
 
