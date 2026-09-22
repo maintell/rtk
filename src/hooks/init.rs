@@ -524,7 +524,9 @@ rtk edit <file> --find "..." --replace "..." --all         # replace every match
 rtk edit <file> --find "..." --range 40-60                 # narrow an ambiguous match to a line window
 rtk edit <file> --find 'version: (\d+)' --replace 'v$1' --regex   # regex, $N groups
 rtk edit <file> --find "..." --replace "..." --preview     # dry run: receipt only, no write
-rtk patch <file> < changes.diff                            # apply a unified diff (stdin), all-or-nothing; --dry-run rehearses
+rtk edit <file> --find "..." --replace "..." --backup      # keep the original as <file>.bak before writing
+rtk patch <file> < changes.diff                            # apply a unified diff (stdin) to one file, all-or-nothing; --dry-run/--backup
+rtk patch [-p N] < multi.patch                             # multi-file git diff: targets from +++ headers (strip a/ b/ by default), applied all-or-nothing across files
 ```
 
 ### Analysis & Debug (70-90% savings)

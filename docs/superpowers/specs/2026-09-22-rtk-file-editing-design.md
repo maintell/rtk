@@ -21,7 +21,7 @@
 | 写侧形态 | **方案 A：双小命令 `rtk edit` + `rtk patch`**（否决批量 `rtk mutate`=B、"只回显压缩"=C） |
 | 安全边界 | **保守**：写能力仅显式子命令；**hook 永不改写写命令**（复杂/批量写命令误译可能损坏文件） |
 | 上游约束 | 纯 fork 自用，不拘束（可自由加依赖：`diffy`） |
-| 分期 | P1 读侧增强 ✅ → P2 写侧 MVP（`rtk edit` ✅ / `rtk patch` ⏳）→ P3 扩展（P3 时再评估 B 形态） |
+| 分期 | P1 读侧增强 ✅ → P2 写侧 MVP（`rtk edit` ✅ / `rtk patch` ✅）→ P3 扩展（多文件 patch ✅ / `--backup` ✅；B 形态评估：不做） |
 | 接口取舍 | 不做 `--json` 输出（YAGNI；文本回执已机器可读），后续按需加 |
 
 ## 3. 架构与组件（§1）
@@ -144,7 +144,7 @@ rtk patch <file> --dry-run ...       # 零写入预演
 - P1：新规则经 `rtk rewrite` 快照断言；误译 = 0（宁可漏改写不可错改写）。
 - P2：编辑类 token 实测对比（agent 工作流场景：改 3 处 + 验证），相对
   `sed/cat` 基线节省 ≥70%；`cargo test` Windows 全绿；fmt/clippy 零告警。
-- P3：多文件 patch 场景通过 + 复盘是否引入 B 形态。
+- P3：多文件 patch ✅（git/纯 `---`/`+++` 双格式解析、`-p N` 剥前缀、跨文件 all-or-nothing + 写阶段字节回滚、`/dev/null` 增删、绝对/`..`/`.git` 路径拒绝）；`--backup` ✅（edit+patch 均产出 `<file>.bak`）。B 形态（结构化批量 mutate）复盘：**不做**——多文件 patch 已覆盖批量场景，`rtk mutate` 的 JSON/转义复杂度在 PowerShell 下反噬，YAGNI。
 
 ## 9. 风险与开放问题
 

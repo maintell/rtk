@@ -34,6 +34,10 @@ pub struct TextDoc {
     /// The file uses CRLF line endings (majority wins; mixed files keep their
     /// untouched regions verbatim either way).
     pub crlf: bool,
+    /// Exact bytes on disk, kept so a multi-file transaction can restore a
+    /// file byte-for-byte during unwinding without trusting the decode/encode
+    /// round-trip.
+    pub original_bytes: Vec<u8>,
 }
 
 impl TextDoc {
@@ -77,6 +81,7 @@ impl TextDoc {
             text,
             encoding,
             crlf,
+            original_bytes: bytes.to_vec(),
         })
     }
 
@@ -248,6 +253,27 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// Copy `path` to `<path>.bak` before a write, when `--backup` was requested
+/// and the file exists (a created file has nothing to back up). Returns the
+/// backup path so callers can report it. An existing `.bak` is replaced —
+/// `--backup` means "keep the version about to be overwritten", not an
+/// archive; the atomic-write contract means a `.bak` is only ever written
+/// from a verified-good read of the original.
+pub fn backup_file(path: &Path, enabled: bool) -> Result<Option<std::path::PathBuf>> {
+    if !enabled || !path.exists() {
+        return Ok(None);
+    }
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "rtk-backup".to_string());
+    name.push_str(".bak");
+    let bak = path.with_file_name(name);
+    std::fs::copy(path, &bak)
+        .with_context(|| format!("cannot back up '{}' to '{}'", path.display(), bak.display()))?;
+    Ok(Some(bak))
+}
+
 /// Refuse to touch files inside a `.git` directory — rtk edits are for
 /// working files, not repository internals.
 pub fn reject_git_internal(path: &Path) -> Result<()> {
@@ -367,5 +393,40 @@ mod tests {
 
         assert!(reject_git_internal(Path::new("repo/.git/config")).is_err());
         assert!(reject_git_internal(Path::new("repo/src/main.rs")).is_ok());
+    }
+
+    #[test]
+    fn backup_file_naming_and_gating() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("file.txt");
+        let plain = dir.path().join("Makefile");
+        std::fs::write(&txt, "one").unwrap();
+        std::fs::write(&plain, "two").unwrap();
+
+        // Disabled → no-op, no file.
+        assert_eq!(backup_file(&txt, false).unwrap(), None);
+        assert!(!dir.path().join("file.txt.bak").exists());
+
+        // Enabled → sibling .bak with the original bytes; extensionless names
+        // still get `.bak` appended (never `..bak` or a replaced extension).
+        assert_eq!(
+            backup_file(&txt, true).unwrap().unwrap(),
+            dir.path().join("file.txt.bak")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("file.txt.bak")).unwrap(),
+            "one"
+        );
+        assert!(backup_file(&plain, true).unwrap().is_some());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Makefile.bak")).unwrap(),
+            "two"
+        );
+
+        // Missing source (a to-be-created file) backs up nothing.
+        assert_eq!(
+            backup_file(&dir.path().join("ghost.rs"), true).unwrap(),
+            None
+        );
     }
 }

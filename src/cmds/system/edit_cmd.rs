@@ -26,6 +26,8 @@ pub struct EditRequest {
     pub regex: bool,
     pub preview: bool,
     pub range: Option<String>,
+    /// Copy the original to `<file>.bak` before writing (never with --preview).
+    pub backup: bool,
 }
 
 /// Exit codes (spec §5): 0 ok · 1 match failure (zero bytes written) ·
@@ -153,13 +155,25 @@ pub fn run(req: EditRequest, verbose: u8) -> Result<i32> {
         .iter()
         .map(|(s, e, piece)| (doc.text[*s..*e].to_string(), piece.clone()))
         .collect();
-    let shown = receipt(&blocks, &lines, req.preview);
+    let mut shown = receipt(&blocks, &lines, req.preview);
 
-    if !req.preview
-        && let Err(e) = edit::atomic_write(&file, &doc.encode(&new_text))
-    {
-        eprintln!("rtk edit: {:#}", e);
-        return Ok(3);
+    if !req.preview {
+        // Back up the original before replacing it; a backup failure aborts
+        // the write, leaving the file untouched (exit 3 = IO trouble).
+        let bak = match edit::backup_file(&file, req.backup) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("rtk edit: {:#}", e);
+                return Ok(3);
+            }
+        };
+        if let Err(e) = edit::atomic_write(&file, &doc.encode(&new_text)) {
+            eprintln!("rtk edit: {:#}", e);
+            return Ok(3);
+        }
+        if let Some(bak) = bak {
+            shown.push_str(&format!("backup → {}\n", bak.display()));
+        }
     }
     print!("{shown}");
     timer.track(
@@ -193,7 +207,35 @@ mod tests {
             regex: false,
             preview: false,
             range: None,
+            backup: false,
         }
+    }
+
+    #[test]
+    fn backup_flag_preserves_original_and_receipt_names_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.rs");
+        std::fs::write(&path, "fn main() {}\n").unwrap();
+        let code = run(
+            EditRequest {
+                find: Some("fn main".into()),
+                replace: Some("pub fn main".into()),
+                backup: true,
+                ..req(&path)
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("t.rs.bak")).unwrap(),
+            "fn main() {}\n"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("pub fn main")
+        );
     }
 
     #[test]

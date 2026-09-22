@@ -160,15 +160,24 @@ enum Commands {
         /// Only consider matches within lines START-END (1-based, inclusive)
         #[arg(long, value_name = "START-END")]
         range: Option<String>,
+        /// Save the original as `<file>.bak` before writing
+        #[arg(long)]
+        backup: bool,
     },
 
-    /// Apply a unified diff (stdin) to one file, all-or-nothing, with a cheap receipt
+    /// Apply a unified diff (stdin) to one or more files, all-or-nothing, with a cheap receipt
     Patch {
-        /// File the diff applies to (the diff itself arrives on stdin)
-        file: PathBuf,
+        /// Single target file; omit to take targets from the diff headers
+        file: Option<PathBuf>,
         /// Report what would change without writing anything
         #[arg(long)]
         dry_run: bool,
+        /// Save each overwritten original as `<file>.bak` before writing
+        #[arg(long)]
+        backup: bool,
+        /// Path components to strip from diff headers (default: 1 for a/ b/ prefixes)
+        #[arg(short = 'p')]
+        strip: Option<usize>,
     },
 
     /// Generate 2-line technical summary (heuristic-based)
@@ -2090,6 +2099,7 @@ fn run_cli() -> Result<i32> {
             regex,
             preview,
             range,
+            backup,
         } => edit_cmd::run(
             edit_cmd::EditRequest {
                 file,
@@ -2099,11 +2109,17 @@ fn run_cli() -> Result<i32> {
                 regex,
                 preview,
                 range,
+                backup,
             },
             cli.verbose,
         )?,
 
-        Commands::Patch { file, dry_run } => patch_cmd::run(file, dry_run, cli.verbose)?,
+        Commands::Patch {
+            file,
+            dry_run,
+            backup,
+            strip,
+        } => patch_cmd::run(file, dry_run, backup, strip, cli.verbose)?,
 
         Commands::Smart {
             file,
