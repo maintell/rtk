@@ -110,17 +110,20 @@ rtk patch <file> --dry-run ...       # 零写入预演
 
 重写规则/内核小项（全部读侧，符合保守红线）：
 
-1. **`rtk read` 新增 `--range <a>-<b>`（行窗口）**：当前 read 只有 head/tail/max-lines，
-   无任意区间；验证流（§4 契约）与 sed -n 改写都依赖它。实现挂现有
-   `byte_line_window` 内核。**多窗口组合不依赖 clap 报错**——实测发现 `read` 等非
-   meta 命令的 clap 冲突会被 `run_fallback` 吞掉、退化成 exec `read`（127，与既有
-   head/tail 冲突同款行为）；故内核 `line_window` 提供确定性优先级
-   （head > tail > range），clap `conflicts_with_all` 仅作同款 house-style 声明。
-2. `type <file>`（cmd.exe 内建）与 `more <file>` → `rtk read <file>`（仅普通调用、
-   非管道段；PowerShell 中 `type`=Get-Content 已覆盖）。
-3. `Get-Content -ReadCount N`、`Get-Content -Head/-Tail` 未覆盖参数组合补齐。
-4. `sed -n '5,20p' file` → `rtk read file --range 5-20`（仅纯打印形态；带 s/ 的
-   sed 保持透传不改写——写操作红线）。
+1. **`rtk read` 新增 `--range <a>-<b>`（行窗口）— ✅ 已实现（fb7a8b3）**：当前 read 只有
+   head/tail/max-lines，无任意区间；验证流（§4 契约）依赖它。实现为
+   `range_window`/`nth_newline_end` + dispatch 手动解析（非 meta 命令的 clap 错误会被
+   `run_fallback` 吞掉退化成 exec，坏值必须走内核解析才能拿到干净的 exit 2）。
+   内核提供确定性优先级 head > tail > range，clap `conflicts_with_all` 仅作声明。
+2. ~~`type <file>`/`more <file>` → `rtk read`~~ — **砍掉（复核后）**。二者是
+   `IGNORED_PREFIXES` 成员、在 Windows 下本就可用（cmd 内建/`more.com`），改写的净收益
+   只有回显压缩，但 `type f > out`、`more f | findstr` 等重定向/管道形态广泛存在，
+   且 `more` 在 cmd/PS 语义不同——误伤面 > 收益，违反"宁可漏改写不可错改写"。
+3. ~~`Get-Content -ReadCount/-Head/-Tail` 补齐~~ — **复核发现 #3439 已覆盖**
+   （`-TotalCount/-First/-Head`→`--max-lines`，`-Tail/-Last`→`--tail-lines`），无需改动。
+4. ~~`sed -n 'A,Bp' file` → `rtk read --range`~~ — **砍掉（复核后）**。Windows PATH 上
+   根本没有 sed，无"不能用"问题；Linux/mac 场景非本 fork 用户痛点；且 sed 与 discover
+   层的 IGNORED 语义纠缠。agent 在 Windows 读区间已有 `Get-Content`/`rtk read --range` 路径。
 5. `init` 指导文档：新增"编辑/验证工作流"一节（P2 交付时联动更新）。
 
 ## 8. 测试策略（§5）

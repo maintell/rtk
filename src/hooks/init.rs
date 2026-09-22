@@ -509,6 +509,7 @@ rtk uv run <cmd>        # Compact uv project command output
 ```bash
 rtk ls <path>           # Tree format, compact (65%)
 rtk read <file>         # Code reading with filtering (60%)
+rtk read <file> --range 40-60  # Line window (1-based, inclusive): verify an edit region without re-reading the whole file
 rtk grep <pattern>      # Search grouped by file (75%). Format flags (-c, -l, -L, -o, -Z) run raw.
 rtk find <pattern>      # Find grouped by directory (70%)
 ```
