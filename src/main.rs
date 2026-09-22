@@ -25,8 +25,8 @@ use cmds::ruby::{rake_cmd, rspec_cmd, rubocop_cmd};
 use cmds::rust::{cargo_cmd, runner};
 use cmds::scala::sbt_cmd;
 use cmds::system::{
-    ast_grep_cmd, ctest_cmd, deps, env_cmd, find_cmd, format_cmd, json_cmd, local_llm, log_cmd, ls,
-    pipe_cmd, read, search, summary, tree, wc_cmd,
+    ast_grep_cmd, ctest_cmd, deps, du_cmd, env_cmd, find_cmd, format_cmd, json_cmd, local_llm,
+    log_cmd, ls, pipe_cmd, read, search, summary, tree, wc_cmd,
 };
 
 use anyhow::{Context, Result};
@@ -288,8 +288,8 @@ enum Commands {
 
     /// Ultra-condensed diff (only changed lines)
     Diff {
-        /// First file or - for stdin (unified diff)
-        file1: PathBuf,
+        /// First file (omit entirely to read a unified diff from stdin)
+        file1: Option<PathBuf>,
         /// Second file (optional if stdin)
         file2: Option<PathBuf>,
     },
@@ -455,6 +455,13 @@ enum Commands {
     /// Word/line/byte count with compact output (strips paths and padding)
     Wc {
         /// Arguments passed to wc (files, flags like -l, -w, -c)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Disk usage per directory with compact output (native on Windows)
+    Du {
+        /// Arguments passed to du (paths, flags like -s, -h, -c, -d)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -2274,11 +2281,21 @@ fn run_cli() -> Result<i32> {
         Commands::Find { args } => find_cmd::run_from_args(&args, cli.verbose)?,
 
         Commands::Diff { file1, file2 } => {
-            if let Some(f2) = file2 {
-                diff_cmd::run(&file1, &f2, cli.verbose)?
-            } else {
-                diff_cmd::run_stdin(cli.verbose)?;
-                0
+            // Three shapes: two files compared natively, one file reading the
+            // other side from stdin (`git diff | rtk diff f`), and no files at
+            // all — plain stdin, the `git diff | rtk diff` pipe. The bare form
+            // used to fail clap parsing and fall through to exec'ing `diff`
+            // (absent on Windows); now it consumes stdin like `rtk log`.
+            match (file1, file2) {
+                (Some(f1), Some(f2)) => diff_cmd::run(&f1, &f2, cli.verbose)?,
+                (Some(_), None) => {
+                    diff_cmd::run_stdin(cli.verbose)?;
+                    0
+                }
+                (None, _) => {
+                    diff_cmd::run_stdin(cli.verbose)?;
+                    0
+                }
             }
         }
 
@@ -2523,6 +2540,8 @@ fn run_cli() -> Result<i32> {
         }
 
         Commands::Wc { args } => wc_cmd::run(&args, cli.verbose)?,
+
+        Commands::Du { args } => du_cmd::run(&args, cli.verbose)?,
 
         Commands::Gain {
             project, // added
@@ -3253,6 +3272,7 @@ fn is_operational_command(cmd: &Commands) -> bool {
         cmd,
         Commands::Ls { .. }
             | Commands::Tree { .. }
+            | Commands::Du { .. }
             | Commands::Read { .. }
             | Commands::Smart { .. }
             | Commands::Git { .. }
@@ -3824,6 +3844,7 @@ mod tests {
             "grep",
             "wget",
             "wc",
+            "du",
             "jest",
             "vitest",
             "ctest",
