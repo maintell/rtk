@@ -460,6 +460,7 @@ enum Commands {
     },
 
     /// Disk usage per directory with compact output (native on Windows)
+    #[command(disable_help_flag = true)]
     Du {
         /// Arguments passed to du (paths, flags like -s, -h, -c, -d)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
