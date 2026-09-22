@@ -244,6 +244,19 @@ fn run_verbatim(args: &[String], verbose: u8) -> Result<i32> {
     crate::core::runner::run_passthrough("find", &os_args, verbose)
 }
 
+/// On Windows, return the resolved `find` path only when it is the built-in
+/// `%SystemRoot%\...\find.exe` (the text-search tool, not GNU find). A GNU find
+/// installed elsewhere (e.g. Git for Windows) is left to run normally.
+#[cfg(windows)]
+fn windows_builtin_find() -> Option<String> {
+    let path = crate::core::utils::resolve_binary("find").ok()?;
+    let sysroot = std::env::var("SystemRoot")
+        .or_else(|_| std::env::var("WINDIR"))
+        .ok()?;
+    let p = path.to_string_lossy().to_lowercase();
+    p.starts_with(&sysroot.to_lowercase()).then_some(p)
+}
+
 fn run_compress(
     options: &[String],
     paths: &[String],
@@ -252,6 +265,21 @@ fn run_compress(
     file_type: Option<&str>,
     verbose: u8,
 ) -> Result<i32> {
+    // The compress path shells out to a real `find`. On Windows the name
+    // resolves to the *text-search* `find.exe` in System32, which rejects find
+    // syntax and produces garbage (e.g. "157F 23D:" from rtk, or wrong output).
+    // Refuse loudly rather than silently mis-search; the common `-name`/`-type`
+    // /`-maxdepth` subset is handled natively by `Dispatch::Native` above.
+    #[cfg(windows)]
+    if let Some(found) = windows_builtin_find() {
+        anyhow::bail!(
+            "rtk find: this expression needs GNU find, but only Windows' built-in \
+             '{found}' is on PATH.\n\
+             rtk walks `-name` / `-iname` / `-type f|d` / `-maxdepth` natively — try one of \
+             those, or install GNU find (e.g. via Git for Windows) for the full syntax."
+        );
+    }
+
     let timer = tracking::TimedExecution::start();
     if verbose > 0 {
         eprintln!("find: results from find, compressed by rtk");
@@ -1359,6 +1387,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))] // spawns the external GNU `find`; Windows has no find.exe
     fn run_from_args_propagates_find_exit_status() {
         let argv = ["/definitely/missing/xyz", "-mtime", "+0"];
         let expected = std::process::Command::new("find")
